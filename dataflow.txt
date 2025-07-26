@@ -1,0 +1,1 @@
+S3 (CSV) → Python App → Try RDS (MySQL) → If Fail → Register in Glue (with S3 path)

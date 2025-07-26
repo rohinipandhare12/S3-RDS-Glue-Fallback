@@ -1,0 +1,66 @@
+import os
+import boto3
+import pandas as pd
+from sqlalchemy import create_engine
+from botocore.exceptions import ClientError
+
+# Load ENV
+s3_bucket = os.getenv("S3_BUCKET")
+s3_key = os.getenv("S3_KEY")
+rds_host = os.getenv("RDS_HOST")
+rds_user = os.getenv("RDS_USER")
+rds_pass = os.getenv("RDS_PASS")
+rds_db = os.getenv("RDS_DB")
+rds_table = os.getenv("RDS_TABLE")
+glue_db = os.getenv("GLUE_DB")
+glue_table = os.getenv("GLUE_TABLE")
+glue_s3_path = os.getenv("GLUE_S3_PATH")
+
+def read_from_s3():
+    s3 = boto3.client('s3')
+    obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+    df = pd.read_csv(obj['Body'])
+    return df
+
+def push_to_rds(df):
+    try:
+        engine = create_engine(f"mysql+pymysql://{rds_user}:{rds_pass}@{rds_host}/{rds_db}")
+        df.to_sql(rds_table, con=engine, if_exists='replace', index=False)
+        print("✅ Data uploaded to RDS")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to upload to RDS: {e}")
+        return False
+
+def fallback_to_glue(df):
+    try:
+        glue = boto3.client('glue')
+        glue.create_database(DatabaseInput={'Name': glue_db})
+        glue.create_table(
+            DatabaseName=glue_db,
+            TableInput={
+                'Name': glue_table,
+                'StorageDescriptor': {
+                    'Columns': [{'Name': col, 'Type': 'string'} for col in df.columns],
+                    'Location': glue_s3_path,
+                    'InputFormat': 'org.apache.hadoop.mapred.TextInputFormat',
+                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat',
+                    'SerdeInfo': {
+                        'SerializationLibrary': 'org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe',
+                        'Parameters': {'field.delim': ','}
+                    }
+                },
+                'TableType': 'EXTERNAL_TABLE'
+            }
+        )
+        print("🟡 Fallback to AWS Glue successful")
+    except ClientError as e:
+        print(f"❌ Glue error: {e}")
+
+def main():
+    df = read_from_s3()
+    if not push_to_rds(df):
+        fallback_to_glue(df)
+
+if __name__ == "__main__":
+    main()
